@@ -1,35 +1,109 @@
-## yield-finder
+# Yield Finder Agent
 
-This project was scaffolded with `create-agent-kit` and ships with a ready-to-run agent app built on [`@lucid-agents/core`](https://www.npmjs.com/package/@lucid-agents/core).
+DeFi yield aggregation agent with x402 payments. Find the best yields across protocols and chains.
 
-### Quick start
+## Entrypoints
 
-```sh
+| Endpoint | Description | Price |
+|----------|-------------|-------|
+| `find` | Find best yields with filters | $0.25 USDC |
+| `compare` | Compare specific protocols | $0.15 USDC |
+| `optimize` | Portfolio allocation optimization | $0.50 USDC |
+
+## Features
+
+**Yield Discovery:**
+- Multi-chain support (Base, Ethereum, Solana)
+- Filter by asset, APY, risk level
+- Sort by highest yields
+- TVL and risk indicators
+
+**Protocol Comparison:**
+- Side-by-side protocol analysis
+- Average APY calculation
+- Total TVL aggregation
+
+**Portfolio Optimization:**
+- Risk-adjusted allocation
+- Conservative/moderate/aggressive strategies
+- Expected return calculations
+
+## Supported Protocols
+
+**Base:** Aave, Compound, Aerodrome, Moonwell, ExtraFi
+
+**Ethereum:** Aave, Lido, Rocket Pool, Curve, Convex
+
+**Solana:** Marinade, Jito, Kamino, Drift, Raydium
+
+## Usage
+
+### Local Development
+
+```bash
 bun install
 bun run dev
 ```
 
-The dev command runs `bun` in watch mode, starts the HTTP server, and reloads when you change files inside `src/`.
+### API Endpoints
 
-### Project structure
+```bash
+# Find best yields on Base
+curl -X POST http://localhost:3000/entrypoints/find/invoke \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "chain": "base",
+      "minApy": 5,
+      "maxRisk": "medium",
+      "limit": 10
+    }
+  }'
 
-- `src/agent.ts` – defines your agent manifest and entrypoints.
-- `src/index.ts` – boots a Bun HTTP server with the agent.
+# Compare protocols
+curl -X POST http://localhost:3000/entrypoints/compare/invoke \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "protocols": ["Aave", "Compound", "Moonwell"],
+      "asset": "USDC"
+    }
+  }'
 
-### Default entrypoints
+# Optimize portfolio
+curl -X POST http://localhost:3000/entrypoints/optimize/invoke \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "amount": 10000,
+      "riskTolerance": "moderate",
+      "chains": ["base", "ethereum"]
+    }
+  }'
+```
 
-- `echo` – Echo input text
+## Configuration
 
-### Available scripts
+Environment variables (`.env`):
 
-- `bun run dev` – start the agent in watch mode.
-- `bun run start` – start the agent once.
-- `bun run agent` – run the agent module directly (helpful for quick experiments).
-- `bunx tsc --noEmit` – type-check the project.
+```
+AGENT_NAME=yield-finder
+NETWORK=base
+FACILITATOR_URL=https://facilitator.daydreams.systems
+PAYMENTS_RECEIVABLE_ADDRESS=<your-wallet>
+```
 
-### Next steps
+## Tech Stack
 
-- Update `src/agent.ts` with your use case.
-- Wire up `@lucid-agents/core` configuration and secrets (see `AGENTS.md` in the repo for details).
-- Update `.env` with your actual PRIVATE_KEY and configuration values.
-- Deploy with your preferred Bun-compatible platform when you're ready.
+- Runtime: Bun
+- Framework: Lucid Agents SDK
+- Payments: x402 on Base
+- Language: TypeScript
+
+## Disclaimer
+
+APYs are approximate and subject to change. This is not financial advice. Always DYOR.
+
+## License
+
+MIT
