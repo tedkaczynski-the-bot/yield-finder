@@ -8,6 +8,85 @@ import { readFileSync } from "fs";
 import { join } from "path";
 console.log('[agent] Imports done, creating agent...');
 
+// ============================================================================
+// PROTOCOL RESEARCH (Brave API)
+// ============================================================================
+
+async function searchProtocolAudits(protocol: string): Promise<Array<{title: string; url: string}>> {
+  const apiKey = process.env.BRAVE_API_KEY;
+  if (!apiKey) return [];
+  
+  try {
+    const query = encodeURIComponent(`${protocol} DeFi audit report security`);
+    const response = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${query}&count=5`, {
+      headers: { "X-Subscription-Token": apiKey }
+    });
+    const data = await response.json() as any;
+    return (data.web?.results || []).map((r: any) => ({ title: r.title, url: r.url }));
+  } catch {
+    return [];
+  }
+}
+
+async function searchProtocolHacks(protocol: string): Promise<Array<{title: string; url: string}>> {
+  const apiKey = process.env.BRAVE_API_KEY;
+  if (!apiKey) return [];
+  
+  try {
+    const query = encodeURIComponent(`${protocol} hack exploit vulnerability DeFi`);
+    const response = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${query}&count=5`, {
+      headers: { "X-Subscription-Token": apiKey }
+    });
+    const data = await response.json() as any;
+    return (data.web?.results || []).map((r: any) => ({ title: r.title, url: r.url }));
+  } catch {
+    return [];
+  }
+}
+
+// ============================================================================
+// AI ANALYSIS (OpenRouter)
+// ============================================================================
+
+async function callAI(systemPrompt: string, userPrompt: string): Promise<string> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) return "";
+  
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://unabotter.xyz",
+        "X-Title": "Ted Yield Finder"
+      },
+      body: JSON.stringify({
+        model: "anthropic/claude-sonnet-4-20250514",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        max_tokens: 2048,
+        temperature: 0.3
+      })
+    });
+    if (!response.ok) return "";
+    const data = await response.json() as any;
+    return data.choices[0].message.content;
+  } catch {
+    return "";
+  }
+}
+
+const YIELD_ANALYST_PROMPT = `You are Ted, a sardonic DeFi analyst. You understand:
+- Yield farming mechanics (LP fees, liquidity mining, real yield vs emissions)
+- Risk factors (smart contract risk, IL, oracle risk, rug risk)
+- Protocol sustainability (real revenue vs token printing)
+- Historical DeFi exploits and what to watch for
+
+Be direct about risks. Gambling is fine if you know you're gambling.`;
+
 const agent = await createAgent({
   name: process.env.AGENT_NAME ?? "yield-finder",
   version: process.env.AGENT_VERSION ?? "1.0.0",
@@ -286,6 +365,126 @@ const optimizeSchema = z.object({
   riskTolerance: z.enum(["conservative", "moderate", "aggressive"]),
   chains: z.array(z.string()).default(["ethereum"]),
   stablecoinOnly: z.boolean().optional(),
+});
+
+// ============================================================================
+// PREMIUM: PROTOCOL DEEP DIVE
+// ============================================================================
+
+const protocolSchema = z.object({
+  protocol: z.string().min(2, "Protocol name required"),
+  chain: z.string().default("all"),
+});
+
+addEntrypoint({
+  key: "analyze-protocol",
+  description: "PREMIUM: Deep dive into a specific protocol. Fetches all pools, researches audit history, checks for past exploits, and provides AI risk analysis.",
+  input: protocolSchema,
+  price: "0.75",
+  handler: async (ctx) => {
+    const { protocol, chain } = ctx.input as z.infer<typeof protocolSchema>;
+    
+    // Fetch protocol yields from DeFiLlama
+    const allPools = await fetchYields();
+    const protocolPools = allPools.filter(p => 
+      p.project.toLowerCase().includes(protocol.toLowerCase()) &&
+      (chain === "all" || p.chain.toLowerCase() === chain.toLowerCase())
+    );
+    
+    if (protocolPools.length === 0) {
+      return {
+        output: {
+          success: false,
+          error: `No pools found for ${protocol}`,
+          tedNote: "Either this protocol doesn't exist on DeFiLlama, or you spelled it wrong. Both are red flags.",
+        }
+      };
+    }
+    
+    // Calculate protocol stats
+    const totalTvl = protocolPools.reduce((sum, p) => sum + (p.tvlUsd || 0), 0);
+    const avgApy = protocolPools.reduce((sum, p) => sum + (p.apy || 0), 0) / protocolPools.length;
+    const chains = [...new Set(protocolPools.map(p => p.chain))];
+    const pools = protocolPools.map(p => ({
+      chain: p.chain,
+      asset: p.symbol,
+      apy: p.apy?.toFixed(2) + '%',
+      tvl: formatTvl(p.tvlUsd),
+      risk: assessPoolRisk(p).level,
+    })).sort((a, b) => parseFloat(b.apy) - parseFloat(a.apy)).slice(0, 15);
+    
+    // Research audits and hacks
+    const [auditResults, hackResults] = await Promise.all([
+      searchProtocolAudits(protocol),
+      searchProtocolHacks(protocol),
+    ]);
+    
+    // AI analysis
+    let aiAnalysis: any = null;
+    try {
+      const prompt = `Analyze this DeFi protocol for yield farming:
+
+Protocol: ${protocol}
+Total TVL: $${(totalTvl / 1e6).toFixed(2)}M
+Average APY: ${avgApy.toFixed(2)}%
+Active Chains: ${chains.join(', ')}
+Number of Pools: ${protocolPools.length}
+
+Top Pools:
+${pools.slice(0, 10).map(p => `- ${p.asset} on ${p.chain}: ${p.apy} APY, ${p.tvl} TVL, ${p.risk} risk`).join('\n')}
+
+Audit search results: ${auditResults.map(a => a.title).join('; ') || 'None found'}
+Hack/exploit search results: ${hackResults.map(h => h.title).join('; ') || 'None found'}
+
+Provide analysis as JSON:
+{
+  "overallRisk": "low|medium|high|critical",
+  "sustainabilityScore": "1-10 (10 = sustainable real yield)",
+  "redFlags": ["any concerns"],
+  "greenFlags": ["positive indicators"],
+  "yieldSource": "where the yield actually comes from",
+  "bestPools": ["top 3 recommended pools with reasoning"],
+  "avoid": ["pools or strategies to avoid"],
+  "tedVerdict": "sardonic but useful take"
+}`;
+
+      const aiResponse = await callAI(YIELD_ANALYST_PROMPT, prompt);
+      if (aiResponse) {
+        const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          aiAnalysis = JSON.parse(jsonMatch[0]);
+        }
+      }
+    } catch (error) {
+      console.error("AI analysis failed:", error);
+    }
+    
+    return {
+      output: {
+        success: true,
+        protocol,
+        overview: {
+          totalTvl: formatTvl(totalTvl),
+          tvlRaw: totalTvl,
+          averageApy: avgApy.toFixed(2) + '%',
+          poolCount: protocolPools.length,
+          activeChains: chains,
+        },
+        topPools: pools,
+        research: {
+          audits: auditResults,
+          exploitHistory: hackResults,
+          auditWarning: auditResults.length === 0 ? "No audits found - DYOR heavily" : null,
+          hackWarning: hackResults.some(h => h.title.toLowerCase().includes('hack') || h.title.toLowerCase().includes('exploit')) 
+            ? "Potential exploit history found - investigate before depositing" : null,
+        },
+        aiAnalysis: aiAnalysis || { error: "AI analysis unavailable" },
+        tedNote: aiAnalysis 
+          ? `Protocol analysis complete. I pulled live data, searched for audits and hacks, and gave you my honest take. ${totalTvl > 100e6 ? "Size provides some security, but remember TVL can exit fast." : "Low TVL = higher risk. You're early or you're wrong."}`
+          : "Data gathered but AI analysis failed. Trust the numbers, not the narrative.",
+      }
+    };
+  },
 });
 
 // Find best yields
