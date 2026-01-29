@@ -1,3 +1,4 @@
+console.log('[agent] Starting imports...');
 import { z } from "zod";
 import { createAgentApp } from "@lucid-agents/hono";
 import { createAgent } from "@lucid-agents/core";
@@ -5,6 +6,7 @@ import { http } from "@lucid-agents/http";
 import { payments, paymentsFromEnv } from "@lucid-agents/payments";
 import { readFileSync } from "fs";
 import { join } from "path";
+console.log('[agent] Imports done, creating agent...');
 
 const agent = await createAgent({
   name: process.env.AGENT_NAME ?? "yield-finder",
@@ -14,8 +16,10 @@ const agent = await createAgent({
   .use(http())
   .use(payments({ config: paymentsFromEnv() }))
   .build();
+console.log('[agent] Agent built successfully');
 
 const { app, addEntrypoint } = await createAgentApp(agent);
+console.log('[agent] App created, adding entrypoints...');
 
 // ============================================================================
 // DEFILLAMA INTEGRATION
