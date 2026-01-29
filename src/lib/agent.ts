@@ -289,7 +289,7 @@ addEntrypoint({
   key: "find",
   description: "Find the best DeFi yields across chains and protocols. Real data from DeFiLlama, real opinions from Ted.",
   input: findSchema,
-  price: { amount: "0.25", currency: "USDC" },
+  price: "0.25",
   handler: async (ctx) => {
     const { chain, asset, minApy, maxApy, minTvl, maxRisk, stablecoinOnly, limit } = ctx.input as z.infer<typeof findSchema>;
     
@@ -397,7 +397,7 @@ addEntrypoint({
   key: "compare",
   description: "Compare yields across specific protocols. Head-to-head analysis with commentary.",
   input: compareSchema,
-  price: { amount: "0.15", currency: "USDC" },
+  price: "0.15",
   handler: async (ctx) => {
     const { protocols, chain } = ctx.input as z.infer<typeof compareSchema>;
     
@@ -491,7 +491,7 @@ addEntrypoint({
   key: "optimize",
   description: "Get yield allocation suggestions based on your risk tolerance. Not financial advice, obviously.",
   input: optimizeSchema,
-  price: { amount: "0.50", currency: "USDC" },
+  price: "0.50",
   handler: async (ctx) => {
     const { amount, riskTolerance, chains, stablecoinOnly } = ctx.input as z.infer<typeof optimizeSchema>;
     
