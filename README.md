@@ -1,109 +1,59 @@
-# Yield Finder Agent
+# Yield Finder
 
-DeFi yield aggregation agent with x402 payments. Find the best yields across protocols and chains.
+DeFi yield opportunity analysis with skeptical risk assessment. No shilling, just signal.
 
-## Entrypoints
+## Live Agent
 
-| Endpoint | Description | Price |
-|----------|-------------|-------|
-| `find` | Find best yields with filters | $0.25 USDC |
-| `compare` | Compare specific protocols | $0.15 USDC |
-| `optimize` | Portfolio allocation optimization | $0.50 USDC |
+**🌐 https://yield.unabotter.xyz**
 
-## Features
+## Endpoints
 
-**Yield Discovery:**
-- Multi-chain support (Base, Ethereum, Solana)
-- Filter by asset, APY, risk level
-- Sort by highest yields
-- TVL and risk indicators
-
-**Protocol Comparison:**
-- Side-by-side protocol analysis
-- Average APY calculation
-- Total TVL aggregation
-
-**Portfolio Optimization:**
-- Risk-adjusted allocation
-- Conservative/moderate/aggressive strategies
-- Expected return calculations
-
-## Supported Protocols
-
-**Base:** Aave, Compound, Aerodrome, Moonwell, ExtraFi
-
-**Ethereum:** Aave, Lido, Rocket Pool, Curve, Convex
-
-**Solana:** Marinade, Jito, Kamino, Drift, Raydium
-
-## Usage
-
-### Local Development
+### `/analyze-pool` - Pool Analysis
+Analyze a DeFi pool/vault for yield and risk factors.
 
 ```bash
-bun install
-bun run dev
+curl -X POST https://yield.unabotter.xyz/analyze-pool \
+  -H "Content-Type: application/json" \
+  -d '{"protocol": "Aave", "asset": "ETH", "chain": "base"}'
 ```
 
-### API Endpoints
+### `/compare-yields` - Yield Comparison
+Compare yields across protocols for the same asset.
 
 ```bash
-# Find best yields on Base
-curl -X POST http://localhost:3000/entrypoints/find/invoke \
+curl -X POST https://yield.unabotter.xyz/compare-yields \
   -H "Content-Type: application/json" \
-  -d '{
-    "input": {
-      "chain": "base",
-      "minApy": 5,
-      "maxRisk": "medium",
-      "limit": 10
-    }
-  }'
-
-# Compare protocols
-curl -X POST http://localhost:3000/entrypoints/compare/invoke \
-  -H "Content-Type: application/json" \
-  -d '{
-    "input": {
-      "protocols": ["Aave", "Compound", "Moonwell"],
-      "asset": "USDC"
-    }
-  }'
-
-# Optimize portfolio
-curl -X POST http://localhost:3000/entrypoints/optimize/invoke \
-  -H "Content-Type: application/json" \
-  -d '{
-    "input": {
-      "amount": 10000,
-      "riskTolerance": "moderate",
-      "chains": ["base", "ethereum"]
-    }
-  }'
+  -d '{"asset": "USDC", "chains": ["base", "ethereum"]}'
 ```
 
-## Configuration
+### `/risk-assessment` - Risk Analysis
+Deep dive into protocol risks, impermanent loss, and smart contract concerns.
 
-Environment variables (`.env`):
-
-```
-AGENT_NAME=yield-finder
-NETWORK=base
-FACILITATOR_URL=https://facilitator.daydreams.systems
-PAYMENTS_RECEIVABLE_ADDRESS=<your-wallet>
+```bash
+curl -X POST https://yield.unabotter.xyz/risk-assessment \
+  -H "Content-Type: application/json" \
+  -d '{"protocol": "Compound", "strategy": "lending"}'
 ```
 
-## Tech Stack
+## Agent Manifest
 
-- Runtime: Bun
-- Framework: Lucid Agents SDK
-- Payments: x402 on Base
-- Language: TypeScript
+```
+GET https://yield.unabotter.xyz/.well-known/agent.json
+```
 
-## Disclaimer
+## Supported Chains
 
-APYs are approximate and subject to change. This is not financial advice. Always DYOR.
+- Base
+- Ethereum
+- Arbitrum
+- Optimism
 
-## License
+## Built With
 
-MIT
+- [Lucid Agents SDK](https://github.com/daydreamsai/lucid-agents)
+- DeFi Llama API integration
+- Deployed on Railway
+
+---
+
+*"APY is not profit until you exit. Most don't."* - Ted
