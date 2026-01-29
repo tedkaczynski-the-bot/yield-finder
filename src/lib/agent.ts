@@ -6,8 +6,8 @@ import { payments, paymentsFromEnv } from "@lucid-agents/payments";
 
 const agent = await createAgent({
   name: process.env.AGENT_NAME ?? "yield-finder",
-  version: process.env.AGENT_VERSION ?? "0.1.0",
-  description: process.env.AGENT_DESCRIPTION ?? "Find the best DeFi yields across protocols",
+  version: process.env.AGENT_VERSION ?? "1.0.0",
+  description: "DeFi yield aggregation with live data. Find yield, but don't pretend you're not gambling.",
 })
   .use(http())
   .use(payments({ config: paymentsFromEnv() }))
@@ -15,238 +15,612 @@ const agent = await createAgent({
 
 const { app, addEntrypoint } = await createAgentApp(agent);
 
-// Mock yield data (in production, this would fetch from DeFi APIs)
-const YIELD_SOURCES = {
-  base: [
-    { protocol: "Aave", asset: "USDC", apy: 4.2, tvl: "1.2B", risk: "low" },
-    { protocol: "Aave", asset: "ETH", apy: 2.1, tvl: "800M", risk: "low" },
-    { protocol: "Compound", asset: "USDC", apy: 3.8, tvl: "500M", risk: "low" },
-    { protocol: "Aerodrome", asset: "USDC-ETH LP", apy: 18.5, tvl: "200M", risk: "medium" },
-    { protocol: "Moonwell", asset: "USDC", apy: 5.1, tvl: "150M", risk: "low" },
-    { protocol: "ExtraFi", asset: "USDC", apy: 8.2, tvl: "50M", risk: "medium" },
+// ============================================================================
+// DEFILLAMA INTEGRATION
+// ============================================================================
+
+interface DefiLlamaPool {
+  chain: string;
+  project: string;
+  symbol: string;
+  tvlUsd: number;
+  apy: number;
+  apyBase: number | null;
+  apyReward: number | null;
+  rewardTokens: string[] | null;
+  pool: string;
+  stablecoin: boolean;
+  ilRisk: string;
+  exposure: string;
+  apyPct1D: number | null;
+  apyPct7D: number | null;
+  apyPct30D: number | null;
+  predictions?: {
+    predictedClass: string;
+    predictedProbability: number;
+  };
+}
+
+interface YieldPool {
+  chain: string;
+  protocol: string;
+  asset: string;
+  apy: number;
+  apyBase: number | null;
+  apyReward: number | null;
+  tvl: string;
+  tvlRaw: number;
+  riskLevel: "low" | "medium" | "high";
+  riskFactors: string[];
+  stablecoin: boolean;
+  ilRisk: boolean;
+  trend: "up" | "down" | "stable";
+  trendChange: number | null;
+  tedComment: string;
+}
+
+// Chain mapping
+const CHAIN_MAP: Record<string, string[]> = {
+  base: ["Base"],
+  ethereum: ["Ethereum"],
+  solana: ["Solana"],
+  arbitrum: ["Arbitrum"],
+  optimism: ["Optimism"],
+  polygon: ["Polygon"],
+  avalanche: ["Avalanche"],
+  bsc: ["BSC", "Binance"],
+};
+
+// Ted's commentary templates
+const TED_COMMENTS = {
+  highApy: [
+    "APY this high usually means you're the yield. Proceed with caution.",
+    "Numbers like these are either a goldmine or a rug in progress. Probably the latter.",
+    "When yield is too good to be true, you're not the farmer - you're the crop.",
+    "This APY is giving 'please provide exit liquidity' energy.",
   ],
-  ethereum: [
-    { protocol: "Aave", asset: "USDC", apy: 3.5, tvl: "5B", risk: "low" },
-    { protocol: "Aave", asset: "ETH", apy: 1.8, tvl: "3B", risk: "low" },
-    { protocol: "Lido", asset: "stETH", apy: 3.2, tvl: "15B", risk: "low" },
-    { protocol: "Rocket Pool", asset: "rETH", apy: 3.0, tvl: "2B", risk: "low" },
-    { protocol: "Curve", asset: "3pool", apy: 2.5, tvl: "1B", risk: "low" },
-    { protocol: "Convex", asset: "cvxCRV", apy: 12.5, tvl: "500M", risk: "medium" },
+  lowRisk: [
+    "Boring and reliable. The Honda Civic of DeFi.",
+    "Safe enough that you might actually sleep at night.",
+    "Conservative choice. Your portfolio won't be exciting, but it'll probably exist tomorrow.",
+    "This is what 'sustainable yield' looks like. Not sexy, but real.",
   ],
-  solana: [
-    { protocol: "Marinade", asset: "mSOL", apy: 6.5, tvl: "1.5B", risk: "low" },
-    { protocol: "Jito", asset: "JitoSOL", apy: 7.2, tvl: "800M", risk: "low" },
-    { protocol: "Kamino", asset: "USDC", apy: 8.5, tvl: "300M", risk: "medium" },
-    { protocol: "Drift", asset: "USDC", apy: 10.2, tvl: "150M", risk: "medium" },
-    { protocol: "Raydium", asset: "SOL-USDC LP", apy: 25.0, tvl: "100M", risk: "high" },
+  mediumRisk: [
+    "Middle of the road. Some risk, some reward. Standard DeFi stuff.",
+    "Not quite degen, not quite boomer. A balanced position.",
+    "Reasonable risk for reasonable returns. How novel.",
+  ],
+  highRisk: [
+    "Full degen mode. May the odds be ever in your favor.",
+    "This is the financial equivalent of free soloing. Exciting until it isn't.",
+    "High risk, high reward, high chance of becoming a cautionary tale.",
+    "Only put in what you can watch go to zero while maintaining inner peace.",
+  ],
+  stablecoin: [
+    "Stablecoin yield - the closest thing to 'safe' in DeFi, which isn't saying much.",
+    "At least you're not exposed to price volatility. Just smart contract risk, oracle risk, depegging risk...",
+  ],
+  ilPool: [
+    "LP position with impermanent loss risk. Math will punish you if assets diverge.",
+    "Impermanent loss is permanent if you panic sell. Just saying.",
+  ],
+  trendingUp: [
+    "APY trending up. Either more rewards or less TVL. Figure out which.",
+  ],
+  trendingDown: [
+    "APY falling. The early farmers have harvested. You're arriving for the scraps.",
   ],
 };
 
-// Find best yields input schema
+function pickComment(category: keyof typeof TED_COMMENTS): string {
+  const comments = TED_COMMENTS[category];
+  return comments[Math.floor(Math.random() * comments.length)];
+}
+
+function formatTvl(tvl: number): string {
+  if (tvl >= 1e9) return `$${(tvl / 1e9).toFixed(2)}B`;
+  if (tvl >= 1e6) return `$${(tvl / 1e6).toFixed(2)}M`;
+  if (tvl >= 1e3) return `$${(tvl / 1e3).toFixed(2)}K`;
+  return `$${tvl.toFixed(2)}`;
+}
+
+function assessRisk(pool: DefiLlamaPool): { level: "low" | "medium" | "high"; factors: string[] } {
+  const factors: string[] = [];
+  let riskScore = 0;
+  
+  // TVL risk
+  if (pool.tvlUsd < 1_000_000) {
+    factors.push("Low TVL (<$1M)");
+    riskScore += 3;
+  } else if (pool.tvlUsd < 10_000_000) {
+    factors.push("Moderate TVL (<$10M)");
+    riskScore += 1;
+  }
+  
+  // APY risk - extremely high APY is suspicious
+  if (pool.apy > 100) {
+    factors.push("Extremely high APY (>100%)");
+    riskScore += 3;
+  } else if (pool.apy > 50) {
+    factors.push("Very high APY (>50%)");
+    riskScore += 2;
+  } else if (pool.apy > 20) {
+    factors.push("High APY (>20%)");
+    riskScore += 1;
+  }
+  
+  // IL risk
+  if (pool.ilRisk === "yes") {
+    factors.push("Impermanent loss exposure");
+    riskScore += 1;
+  }
+  
+  // Exposure risk
+  if (pool.exposure === "multi") {
+    factors.push("Multi-asset exposure");
+    riskScore += 1;
+  }
+  
+  // Reward token dependency
+  if (pool.apyReward && pool.apyBase) {
+    const rewardRatio = pool.apyReward / (pool.apyBase + pool.apyReward);
+    if (rewardRatio > 0.8) {
+      factors.push("Yield mostly from reward tokens");
+      riskScore += 2;
+    } else if (rewardRatio > 0.5) {
+      factors.push("Significant reward token dependency");
+      riskScore += 1;
+    }
+  }
+  
+  // Trend risk
+  if (pool.apyPct7D && pool.apyPct7D < -20) {
+    factors.push("APY dropped >20% in 7 days");
+    riskScore += 1;
+  }
+  
+  let level: "low" | "medium" | "high";
+  if (riskScore >= 5) level = "high";
+  else if (riskScore >= 2) level = "medium";
+  else level = "low";
+  
+  if (factors.length === 0) {
+    factors.push("No major risk factors identified");
+  }
+  
+  return { level, factors };
+}
+
+function transformPool(pool: DefiLlamaPool): YieldPool {
+  const risk = assessRisk(pool);
+  
+  // Determine trend
+  let trend: "up" | "down" | "stable" = "stable";
+  let trendChange: number | null = pool.apyPct7D;
+  if (pool.apyPct7D) {
+    if (pool.apyPct7D > 5) trend = "up";
+    else if (pool.apyPct7D < -5) trend = "down";
+  }
+  
+  // Generate Ted comment based on pool characteristics
+  let tedComment: string;
+  if (pool.apy > 50) {
+    tedComment = pickComment("highApy");
+  } else if (risk.level === "low") {
+    tedComment = pickComment("lowRisk");
+  } else if (risk.level === "high") {
+    tedComment = pickComment("highRisk");
+  } else if (pool.stablecoin) {
+    tedComment = pickComment("stablecoin");
+  } else if (pool.ilRisk === "yes") {
+    tedComment = pickComment("ilPool");
+  } else if (trend === "up") {
+    tedComment = pickComment("trendingUp");
+  } else if (trend === "down") {
+    tedComment = pickComment("trendingDown");
+  } else {
+    tedComment = pickComment("mediumRisk");
+  }
+  
+  return {
+    chain: pool.chain,
+    protocol: pool.project,
+    asset: pool.symbol,
+    apy: Math.round(pool.apy * 100) / 100,
+    apyBase: pool.apyBase ? Math.round(pool.apyBase * 100) / 100 : null,
+    apyReward: pool.apyReward ? Math.round(pool.apyReward * 100) / 100 : null,
+    tvl: formatTvl(pool.tvlUsd),
+    tvlRaw: pool.tvlUsd,
+    riskLevel: risk.level,
+    riskFactors: risk.factors,
+    stablecoin: pool.stablecoin,
+    ilRisk: pool.ilRisk === "yes",
+    trend,
+    trendChange,
+    tedComment,
+  };
+}
+
+async function fetchYields(): Promise<DefiLlamaPool[]> {
+  try {
+    const response = await fetch("https://yields.llama.fi/pools");
+    if (!response.ok) {
+      throw new Error(`DeFiLlama API error: ${response.status}`);
+    }
+    const data = await response.json();
+    return data.data || [];
+  } catch (error) {
+    console.error("Failed to fetch yields:", error);
+    return [];
+  }
+}
+
+// ============================================================================
+// ENTRYPOINTS
+// ============================================================================
+
 const findSchema = z.object({
-  chain: z.enum(["base", "ethereum", "solana", "all"]).default("all"),
+  chain: z.enum(["base", "ethereum", "solana", "arbitrum", "optimism", "polygon", "avalanche", "bsc", "all"]).default("all"),
   asset: z.string().optional(),
   minApy: z.number().min(0).optional(),
+  maxApy: z.number().optional(),
+  minTvl: z.number().optional(),
   maxRisk: z.enum(["low", "medium", "high"]).optional(),
-  limit: z.number().min(1).max(20).default(10),
+  stablecoinOnly: z.boolean().optional(),
+  limit: z.number().min(1).max(50).default(20),
 });
 
-// Compare protocols input schema
 const compareSchema = z.object({
-  protocols: z.array(z.string()).min(2).max(5),
-  asset: z.string().optional(),
+  protocols: z.array(z.string()).min(2).max(10),
+  chain: z.string().optional(),
 });
 
-// Portfolio optimization input schema
 const optimizeSchema = z.object({
   amount: z.number().min(100),
   riskTolerance: z.enum(["conservative", "moderate", "aggressive"]),
-  chains: z.array(z.enum(["base", "ethereum", "solana"])).default(["base"]),
+  chains: z.array(z.string()).default(["ethereum"]),
+  stablecoinOnly: z.boolean().optional(),
 });
 
-// Find best yields entrypoint
+// Find best yields
 addEntrypoint({
   key: "find",
-  description: "Find the best DeFi yields across protocols and chains",
+  description: "Find the best DeFi yields across chains and protocols. Real data from DeFiLlama, real opinions from Ted.",
   input: findSchema,
   price: { amount: "0.25", currency: "USDC" },
   handler: async (ctx) => {
-    const { chain, asset, minApy, maxRisk, limit } = ctx.input as z.infer<typeof findSchema>;
+    const { chain, asset, minApy, maxApy, minTvl, maxRisk, stablecoinOnly, limit } = ctx.input as z.infer<typeof findSchema>;
     
-    let yields: Array<typeof YIELD_SOURCES.base[0] & { chain: string }> = [];
+    const allPools = await fetchYields();
     
-    // Collect yields from requested chains
-    const chains = chain === "all" ? ["base", "ethereum", "solana"] : [chain];
-    for (const c of chains) {
-      const chainYields = YIELD_SOURCES[c as keyof typeof YIELD_SOURCES] || [];
-      yields.push(...chainYields.map(y => ({ ...y, chain: c })));
+    if (allPools.length === 0) {
+      return {
+        output: {
+          error: "Failed to fetch yield data from DeFiLlama. Try again in a moment.",
+          tedComment: "DeFiLlama is taking a llama break. The APIs that power DeFi are themselves centralized services. Ironic, isn't it?",
+        },
+      };
     }
     
-    // Apply filters
-    if (asset) {
-      yields = yields.filter(y => 
-        y.asset.toLowerCase().includes(asset.toLowerCase())
-      );
-    }
-    if (minApy !== undefined) {
-      yields = yields.filter(y => y.apy >= minApy);
-    }
+    // Filter pools
+    let pools = allPools.filter(p => {
+      // Chain filter
+      if (chain !== "all") {
+        const chainNames = CHAIN_MAP[chain] || [chain];
+        if (!chainNames.some(c => p.chain.toLowerCase().includes(c.toLowerCase()))) {
+          return false;
+        }
+      }
+      
+      // Asset filter
+      if (asset && !p.symbol.toLowerCase().includes(asset.toLowerCase())) {
+        return false;
+      }
+      
+      // APY filters
+      if (minApy !== undefined && p.apy < minApy) return false;
+      if (maxApy !== undefined && p.apy > maxApy) return false;
+      
+      // TVL filter
+      if (minTvl !== undefined && p.tvlUsd < minTvl) return false;
+      
+      // Stablecoin filter
+      if (stablecoinOnly && !p.stablecoin) return false;
+      
+      // Exclude zero/null APY
+      if (!p.apy || p.apy <= 0) return false;
+      
+      return true;
+    });
+    
+    // Transform and assess risk
+    let yields = pools.map(transformPool);
+    
+    // Risk filter (after transformation)
     if (maxRisk) {
-      const riskLevels = { low: 1, medium: 2, high: 3 };
-      const maxLevel = riskLevels[maxRisk];
-      yields = yields.filter(y => riskLevels[y.risk as keyof typeof riskLevels] <= maxLevel);
+      const riskOrder = { low: 1, medium: 2, high: 3 };
+      const maxLevel = riskOrder[maxRisk];
+      yields = yields.filter(y => riskOrder[y.riskLevel] <= maxLevel);
     }
     
     // Sort by APY descending
     yields.sort((a, b) => b.apy - a.apy);
     
-    // Limit results
+    // Limit
     yields = yields.slice(0, limit);
+    
+    // Generate summary
+    const avgApy = yields.length > 0 
+      ? yields.reduce((sum, y) => sum + y.apy, 0) / yields.length 
+      : 0;
+    
+    const riskDistribution = {
+      low: yields.filter(y => y.riskLevel === "low").length,
+      medium: yields.filter(y => y.riskLevel === "medium").length,
+      high: yields.filter(y => y.riskLevel === "high").length,
+    };
+    
+    let overallComment: string;
+    if (yields.length === 0) {
+      overallComment = "No pools match your criteria. Either your standards are too high or the market is too boring right now.";
+    } else if (avgApy > 30) {
+      overallComment = "These yields look great on paper. Remember: in DeFi, when something looks too good to be true, you're usually the product, not the customer.";
+    } else if (riskDistribution.high > riskDistribution.low) {
+      overallComment = "Most of these are high-risk plays. You're not yield farming, you're yield gambling. Know the difference.";
+    } else if (riskDistribution.low > yields.length / 2) {
+      overallComment = "Relatively conservative options. Won't make you rich, probably won't make you poor either.";
+    } else {
+      overallComment = "Mixed bag of opportunities. Do your own research on each protocol before aping in.";
+    }
     
     return {
       output: {
+        overallComment,
+        summary: {
+          totalFound: yields.length,
+          averageApy: `${avgApy.toFixed(2)}%`,
+          riskDistribution,
+          filters: { chain, asset, minApy, maxRisk, stablecoinOnly },
+        },
         yields,
-        count: yields.length,
-        bestYield: yields[0] || null,
-        averageApy: yields.length > 0 
-          ? (yields.reduce((sum, y) => sum + y.apy, 0) / yields.length).toFixed(2)
-          : "0",
-        timestamp: new Date().toISOString(),
-        disclaimer: "APYs are approximate and subject to change. Always DYOR.",
+        dataSource: "DeFiLlama (yields.llama.fi)",
+        disclaimer: "APYs are historical and not guaranteed. DeFi protocols can be exploited. Only invest what you can afford to lose. This is not financial advice - it's a search engine with opinions.",
       },
     };
   },
 });
 
-// Compare protocols entrypoint
+// Compare protocols
 addEntrypoint({
   key: "compare",
-  description: "Compare yields across specific protocols",
+  description: "Compare yields across specific protocols. Head-to-head analysis with commentary.",
   input: compareSchema,
   price: { amount: "0.15", currency: "USDC" },
   handler: async (ctx) => {
-    const { protocols, asset } = ctx.input as z.infer<typeof compareSchema>;
+    const { protocols, chain } = ctx.input as z.infer<typeof compareSchema>;
     
-    const allYields = [
-      ...YIELD_SOURCES.base.map(y => ({ ...y, chain: "base" })),
-      ...YIELD_SOURCES.ethereum.map(y => ({ ...y, chain: "ethereum" })),
-      ...YIELD_SOURCES.solana.map(y => ({ ...y, chain: "solana" })),
-    ];
+    const allPools = await fetchYields();
     
-    const comparison: Record<string, typeof allYields> = {};
-    
-    for (const protocol of protocols) {
-      let protocolYields = allYields.filter(y => 
-        y.protocol.toLowerCase() === protocol.toLowerCase()
-      );
-      if (asset) {
-        protocolYields = protocolYields.filter(y =>
-          y.asset.toLowerCase().includes(asset.toLowerCase())
-        );
-      }
-      comparison[protocol] = protocolYields;
+    if (allPools.length === 0) {
+      return {
+        output: {
+          error: "Failed to fetch yield data",
+          tedComment: "The oracle is offline. Even DeFi can't escape infrastructure dependencies.",
+        },
+      };
     }
     
-    // Calculate summary stats
-    const summary = protocols.map(protocol => {
-      const yields = comparison[protocol] || [];
-      const avgApy = yields.length > 0
-        ? yields.reduce((sum, y) => sum + y.apy, 0) / yields.length
+    const comparison: Record<string, {
+      pools: YieldPool[];
+      avgApy: number;
+      totalTvl: number;
+      riskProfile: string;
+    }> = {};
+    
+    for (const protocol of protocols) {
+      let pools = allPools.filter(p => 
+        p.project.toLowerCase().includes(protocol.toLowerCase())
+      );
+      
+      if (chain) {
+        const chainNames = CHAIN_MAP[chain] || [chain];
+        pools = pools.filter(p => 
+          chainNames.some(c => p.chain.toLowerCase().includes(c.toLowerCase()))
+        );
+      }
+      
+      const transformed = pools.filter(p => p.apy > 0).map(transformPool);
+      const avgApy = transformed.length > 0
+        ? transformed.reduce((sum, p) => sum + p.apy, 0) / transformed.length
         : 0;
-      const totalTvl = yields.reduce((sum, y) => {
-        const tvlNum = parseFloat(y.tvl.replace(/[^0-9.]/g, ""));
-        const multiplier = y.tvl.includes("B") ? 1e9 : y.tvl.includes("M") ? 1e6 : 1;
-        return sum + tvlNum * multiplier;
-      }, 0);
-      return {
-        protocol,
-        avgApy: avgApy.toFixed(2),
-        poolCount: yields.length,
-        totalTvl: totalTvl > 1e9 ? `${(totalTvl / 1e9).toFixed(1)}B` : `${(totalTvl / 1e6).toFixed(0)}M`,
+      const totalTvl = pools.reduce((sum, p) => sum + p.tvlUsd, 0);
+      
+      // Determine risk profile
+      const highRiskCount = transformed.filter(p => p.riskLevel === "high").length;
+      const lowRiskCount = transformed.filter(p => p.riskLevel === "low").length;
+      let riskProfile: string;
+      if (transformed.length === 0) riskProfile = "No data";
+      else if (highRiskCount > lowRiskCount) riskProfile = "Aggressive";
+      else if (lowRiskCount > transformed.length / 2) riskProfile = "Conservative";
+      else riskProfile = "Balanced";
+      
+      comparison[protocol] = {
+        pools: transformed.slice(0, 5), // Top 5 per protocol
+        avgApy,
+        totalTvl,
+        riskProfile,
       };
-    });
+    }
+    
+    // Rank by average APY
+    const rankings = Object.entries(comparison)
+      .map(([protocol, data]) => ({
+        protocol,
+        avgApy: data.avgApy,
+        totalTvl: formatTvl(data.totalTvl),
+        poolCount: data.pools.length,
+        riskProfile: data.riskProfile,
+      }))
+      .sort((a, b) => b.avgApy - a.avgApy);
+    
+    const winner = rankings[0];
+    let verdict: string;
+    if (!winner || winner.avgApy === 0) {
+      verdict = "No clear winner - either the protocols aren't on DeFiLlama or they have no active yield pools.";
+    } else if (rankings.length > 1 && rankings[0].avgApy > rankings[1].avgApy * 1.5) {
+      verdict = `${winner.protocol} wins by a landslide, but ask yourself why the APY is so much higher. Usually it's either more risk or more inflation.`;
+    } else {
+      verdict = `${winner.protocol} leads on raw APY, but consider TVL and risk profile before deciding. Higher yield often means higher risk of getting rekt.`;
+    }
     
     return {
       output: {
+        verdict,
+        rankings,
         comparison,
-        summary,
-        winner: summary.sort((a, b) => parseFloat(b.avgApy) - parseFloat(a.avgApy))[0]?.protocol || null,
+        tedComment: "Comparing protocols is like comparing casinos. Some have better odds, but they're all designed to take your money. At least DeFi lets you see the code that's taking it.",
       },
     };
   },
 });
 
-// Portfolio optimization entrypoint
+// Portfolio optimization
 addEntrypoint({
   key: "optimize",
-  description: "Get optimized yield allocation for your portfolio",
+  description: "Get yield allocation suggestions based on your risk tolerance. Not financial advice, obviously.",
   input: optimizeSchema,
   price: { amount: "0.50", currency: "USDC" },
   handler: async (ctx) => {
-    const { amount, riskTolerance, chains } = ctx.input as z.infer<typeof optimizeSchema>;
+    const { amount, riskTolerance, chains, stablecoinOnly } = ctx.input as z.infer<typeof optimizeSchema>;
     
-    // Get yields for requested chains
-    let yields: Array<typeof YIELD_SOURCES.base[0] & { chain: string }> = [];
-    for (const chain of chains) {
-      const chainYields = YIELD_SOURCES[chain as keyof typeof YIELD_SOURCES] || [];
-      yields.push(...chainYields.map(y => ({ ...y, chain })));
+    const allPools = await fetchYields();
+    
+    if (allPools.length === 0) {
+      return {
+        output: {
+          error: "Failed to fetch yield data",
+        },
+      };
+    }
+    
+    // Filter by chains
+    let pools = allPools.filter(p => {
+      const poolChain = p.chain.toLowerCase();
+      return chains.some(c => {
+        const chainNames = CHAIN_MAP[c] || [c];
+        return chainNames.some(cn => poolChain.includes(cn.toLowerCase()));
+      });
+    });
+    
+    if (stablecoinOnly) {
+      pools = pools.filter(p => p.stablecoin);
     }
     
     // Filter by risk tolerance
-    const riskFilters = {
-      conservative: ["low"],
-      moderate: ["low", "medium"],
-      aggressive: ["low", "medium", "high"],
-    };
-    yields = yields.filter(y => riskFilters[riskTolerance].includes(y.risk));
+    const transformed = pools.filter(p => p.apy > 0).map(transformPool);
     
-    // Sort by APY
-    yields.sort((a, b) => b.apy - a.apy);
+    let eligiblePools: YieldPool[];
+    let maxPositions: number;
+    let targetRiskLevel: string;
     
-    // Create allocation
-    const allocation: Array<{
-      protocol: string;
-      asset: string;
-      chain: string;
-      apy: number;
-      amount: number;
-      percentage: number;
-    }> = [];
+    switch (riskTolerance) {
+      case "conservative":
+        eligiblePools = transformed.filter(p => p.riskLevel === "low" && p.tvlRaw > 10_000_000);
+        maxPositions = 5;
+        targetRiskLevel = "Mainly blue-chip protocols with >$10M TVL";
+        break;
+      case "moderate":
+        eligiblePools = transformed.filter(p => p.riskLevel !== "high" && p.tvlRaw > 1_000_000);
+        maxPositions = 7;
+        targetRiskLevel = "Mix of established and emerging protocols, no high-risk";
+        break;
+      case "aggressive":
+        eligiblePools = transformed.filter(p => p.tvlRaw > 100_000);
+        maxPositions = 10;
+        targetRiskLevel = "Includes high-risk, high-reward opportunities";
+        break;
+    }
     
-    // Allocation strategy based on risk tolerance
-    const maxPositions = riskTolerance === "conservative" ? 3 : riskTolerance === "moderate" ? 5 : 7;
-    const topYields = yields.slice(0, maxPositions);
+    // Sort by risk-adjusted return (simple: APY / risk factor)
+    const riskMultiplier = { low: 1, medium: 0.7, high: 0.4 };
+    eligiblePools.sort((a, b) => {
+      const aScore = a.apy * riskMultiplier[a.riskLevel];
+      const bScore = b.apy * riskMultiplier[b.riskLevel];
+      return bScore - aScore;
+    });
     
-    // Weight by APY
-    const totalApy = topYields.reduce((sum, y) => sum + y.apy, 0);
-    for (const y of topYields) {
-      const percentage = (y.apy / totalApy) * 100;
-      allocation.push({
-        protocol: y.protocol,
-        asset: y.asset,
-        chain: y.chain,
-        apy: y.apy,
-        amount: Math.round((percentage / 100) * amount),
-        percentage: Math.round(percentage),
+    // Take top pools
+    const selectedPools = eligiblePools.slice(0, maxPositions);
+    
+    if (selectedPools.length === 0) {
+      return {
+        output: {
+          error: "No suitable pools found for your criteria",
+          tedComment: "Your filters are too restrictive, or the chains you selected don't have qualifying yields. Try broader criteria.",
+        },
+      };
+    }
+    
+    // Allocate with diversification
+    // Higher APY gets more, but capped for diversification
+    const totalScore = selectedPools.reduce((sum, p) => sum + p.apy, 0);
+    const allocation = selectedPools.map(pool => {
+      const rawPercentage = (pool.apy / totalScore) * 100;
+      // Cap any single position at 30%
+      const cappedPercentage = Math.min(rawPercentage, 30);
+      return {
+        protocol: pool.protocol,
+        asset: pool.asset,
+        chain: pool.chain,
+        apy: pool.apy,
+        riskLevel: pool.riskLevel,
+        percentage: Math.round(cappedPercentage),
+        amount: Math.round((cappedPercentage / 100) * amount),
+        tedComment: pool.tedComment,
+      };
+    });
+    
+    // Normalize percentages to 100
+    const totalPercentage = allocation.reduce((sum, a) => sum + a.percentage, 0);
+    if (totalPercentage !== 100) {
+      const adjustment = (100 - totalPercentage) / allocation.length;
+      allocation.forEach(a => {
+        a.percentage = Math.round(a.percentage + adjustment);
+        a.amount = Math.round((a.percentage / 100) * amount);
       });
     }
     
-    // Calculate expected returns
+    // Calculate weighted APY
     const weightedApy = allocation.reduce((sum, a) => sum + (a.apy * a.percentage / 100), 0);
     const expectedYearlyReturn = (amount * weightedApy / 100);
     
+    let overallComment: string;
+    if (riskTolerance === "conservative") {
+      overallComment = "Conservative allocation focusing on battle-tested protocols. You won't get rich quick, but you probably won't get rekt either.";
+    } else if (riskTolerance === "aggressive") {
+      overallComment = "Aggressive allocation with higher yield potential. Also higher potential for watching your portfolio go to zero. You've been warned.";
+    } else {
+      overallComment = "Balanced approach - some safe harbors, some moonshots. A reasonable strategy if you can resist the urge to go full degen.";
+    }
+    
     return {
       output: {
-        allocation,
+        overallComment,
         summary: {
-          totalAmount: amount,
-          positionCount: allocation.length,
-          weightedApy: weightedApy.toFixed(2),
-          expectedYearlyReturn: expectedYearlyReturn.toFixed(2),
-          riskLevel: riskTolerance,
+          totalAmount: `$${amount.toLocaleString()}`,
+          positions: allocation.length,
+          weightedApy: `${weightedApy.toFixed(2)}%`,
+          expectedYearlyReturn: `$${expectedYearlyReturn.toFixed(2)}`,
+          riskProfile: targetRiskLevel,
         },
-        recommendation: `Based on ${riskTolerance} risk tolerance, diversify across ${allocation.length} positions for optimal risk-adjusted returns.`,
-        disclaimer: "This is not financial advice. APYs fluctuate and past performance does not guarantee future results.",
+        allocation,
+        warnings: [
+          "This is algorithmic allocation, not financial advice",
+          "APYs change constantly - rebalance regularly",
+          "Smart contract risk exists for all protocols",
+          "Past yields don't guarantee future returns",
+        ],
+        tedComment: "I've given you a spreadsheet, not a crystal ball. The market will do what it does regardless of what any algorithm suggests. Stay humble, stay solvent.",
       },
     };
   },
